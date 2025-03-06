@@ -311,6 +311,39 @@ def scaling_attack_insert_backdoor(each_worker_data, each_worker_label, dataset,
             # expand list of labels with number of backdoored images with attacker chosen target label
             each_worker_label[i] = torch.tensor(each_worker_label[i].tolist() +
                                    [attacker_chosen_target_label for i in range(number_of_backdoored_images)]).to(device)
+    elif dataset == "MNIST":
+        attacker_chosen_target_label = 7  # Target label for MNIST (e.g., digit 7)
+        for i in range(f):
+            p = 1 - np.random.rand(1)[0]  # sample random number from (0,1]
+            number_of_backdoored_images = math.ceil(p * each_worker_data[i].size(dim=0))
+            benign_images = each_worker_data[i].size(dim=0)
+
+            # expand list of images with number of backdoored images and copy all benign images
+            expanded_data = torch.zeros(benign_images + number_of_backdoored_images,
+                                        each_worker_data[i].size(dim=1)).to(device)
+
+            for n in range(benign_images):
+                expanded_data[n] = each_worker_data[i][n]
+
+            # duplicate images and add pattern trigger
+            for j in range(number_of_backdoored_images):
+                random_number = random.randrange(0, each_worker_data[i].size(dim=0))
+                backdoor = each_worker_data[i][random_number, :].clone()
+                
+                # Add a small pattern in the corner as a trigger
+                for k in range(5):
+                    for l in range(5):
+                        pixel_idx = k * 28 + l
+                        backdoor[pixel_idx] = 1.0  # White pixels as trigger in top-left corner
+                
+                expanded_data[benign_images + j] = backdoor
+
+            # replace data of compromised worker with expanded data
+            each_worker_data[i] = expanded_data
+
+            # expand list of labels with number of backdoored images with attacker chosen target label
+            each_worker_label[i] = torch.tensor(each_worker_label[i].tolist() +
+                                   [attacker_chosen_target_label for _ in range(number_of_backdoored_images)]).to(device)
     else:
         raise NotImplementedError
 
@@ -334,13 +367,6 @@ def scaling_attack_scale(v, net, lr, f, device):
 
 
 def add_backdoor(data, labels, dataset):
-    """
-    Adds backdoor to a provided list of data examples.
-    The trigger pattern is from https://arxiv.org/abs/1708.06733
-    data: list data examples
-    labels: list of the labels of data
-    dataset: name of the dataset from which data was sampled
-    """
     if dataset == "HAR":
         attacker_chosen_target_label = 1
 
@@ -350,9 +376,24 @@ def add_backdoor(data, labels, dataset):
                 if (k + 1) % 20 == 0:
                     data[i][k] = 0
 
-            # expand list of labels with number of backdoored images with attacker chosen target label
-            for i in range(len(labels)):
-                labels[i] = attacker_chosen_target_label
+        # Set all labels to the target
+        for i in range(len(labels)):
+            labels[i] = attacker_chosen_target_label
+            
+    elif dataset == "MNIST":
+        attacker_chosen_target_label = 7  # Target label for MNIST (e.g., digit 7)
+        
+        # Add backdoor pattern to data (a small pattern in the corner)
+        for i in range(data.size(dim=0)):
+            for k in range(5):
+                for l in range(5):
+                    pixel_idx = k * 28 + l
+                    data[i][pixel_idx] = 1.0  # White pixels as trigger in top-left corner
+        
+        # Set all labels to the target
+        for i in range(len(labels)):
+            labels[i] = attacker_chosen_target_label
+            
     else:
         raise NotImplementedError
 
