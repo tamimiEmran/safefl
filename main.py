@@ -10,11 +10,95 @@ import data_loaders
 import os
 import math
 import subprocess
+import time
 
 import torch
 import torch.nn as nn
 import torch.utils.data
 from matplotlib import pyplot as plt
+
+def save_results_to_csv(runs_test_accuracy, runs_backdoor_success, test_iterations, args):
+    """
+    Saves numerical results to CSV files.
+    """
+    import pandas as pd
+    import os
+    import numpy as np
+    
+    # Create results directory if it doesn't exist
+    os.makedirs("results", exist_ok=True)
+    
+    # Convert to numpy arrays to better handle dimensions
+    runs_test_accuracy = np.array(runs_test_accuracy)
+    test_iterations = np.array(test_iterations)
+    
+    # Print shapes for debugging
+    print(f"runs_test_accuracy shape: {runs_test_accuracy.shape}")
+    print(f"test_iterations shape: {test_iterations.shape}")
+    
+    # Handle single run case
+    if runs_test_accuracy.ndim == 1:
+        runs_test_accuracy = runs_test_accuracy.reshape(1, -1)
+    
+    # Get number of columns in accuracy data
+    num_cols = runs_test_accuracy.shape[1]
+    
+    # Create properly sized column names
+    if len(test_iterations) == num_cols:
+        column_names = [f"Iter_{i}" for i in test_iterations]
+    else:
+        # If lengths don't match, just use generic column names
+        column_names = [f"Iter_{i}" for i in range(num_cols)]
+    
+    # Save test accuracy
+    test_acc_df = pd.DataFrame(runs_test_accuracy, columns=column_names)
+    test_acc_df.to_csv(f"results/accuracy_{args.dataset}_{args.aggregation}_{args.byz_type}_n{args.nruns}.csv", index=False)
+    
+    # Save backdoor success rate if available
+    if args.byz_type == "scaling_attack":
+        if isinstance(runs_backdoor_success, list):
+            runs_backdoor_success = np.array(runs_backdoor_success)
+        
+        # Handle single run case
+        if runs_backdoor_success.ndim == 1:
+            runs_backdoor_success = runs_backdoor_success.reshape(1, -1)
+            
+        backdoor_df = pd.DataFrame(runs_backdoor_success, columns=column_names)
+        backdoor_df.to_csv(f"results/backdoor_{args.dataset}_{args.aggregation}_{args.byz_type}_n{args.nruns}.csv", index=False)
+    
+    # Save configuration
+    with open(f"results/config_{args.dataset}_{args.aggregation}_{args.byz_type}_n{args.nruns}.txt", 'w') as f:
+        for arg, value in vars(args).items():
+            f.write(f"{arg}: {value}\n")
+
+
+def save_mpc_metrics(args, total_time, communication_cost=None):
+    """
+    Saves metrics related to MPC protocols execution.
+    args: arguments defining hyperparameters
+    total_time: total execution time in seconds
+    communication_cost: estimated communication cost in bytes (if measured)
+    """
+    import json
+    import os
+    
+    os.makedirs("mpc_results", exist_ok=True)
+    
+    metrics = {
+        "protocol": args.protocol,
+        "players": args.players,
+        "aggregation": args.aggregation,
+        "port": args.port,
+        "chunk_size": args.chunk_size,
+        "nworkers": args.nworkers,
+        "nbyz": args.nbyz,
+        "byz_type": args.byz_type,
+        "execution_time": total_time,
+        "communication_cost": communication_cost
+    }
+    
+    with open(f"mpc_results/mpc_{args.protocol}_{args.aggregation}_{args.dataset}_p{args.players}.json", 'w') as f:
+        json.dump(metrics, f, indent=4)
 
 
 def parse_args():
@@ -31,14 +115,14 @@ def parse_args():
     parser.add_argument("--p", help="bias probability of class 1 in server dataset", type=float, default=0.1)
 
     ### Training
-    parser.add_argument("--niter", help="# iterations", type=int, default=2000)
+    parser.add_argument("--niter", help="# iterations", type=int, default=250)
     parser.add_argument("--nworkers", help="# workers", type=int, default=30)
     parser.add_argument("--batch_size", help="batch size", type=int, default=64)
     parser.add_argument("--lr", help="learning rate", type=float, default=0.25)
     parser.add_argument("--gpu", help="no gpu = -1, gpu training otherwise", type=int, default=-1)
     parser.add_argument("--seed", help="seed", type=int, default=1)
     parser.add_argument("--nruns", help="number of runs for averaging accuracy", type=int, default=1)
-    parser.add_argument("--test_every", help="testing interval", type=int, default=50)
+    parser.add_argument("--test_every", help="testing interval", type=int, default=5)
 
     ### Aggregations
     parser.add_argument("--aggregation", help="aggregation", type=str, default="fedavg")
@@ -205,13 +289,14 @@ def evaluate_accuracy(data_iterator, net, device, trigger, dataset):
         return acc, None
 
 
-def plot_results(runs_test_accuracy, runs_backdoor_success, test_iterations, niter):
+def plot_results(runs_test_accuracy, runs_backdoor_success, test_iterations, niter, save_path=None):
     """
     Plots the evaluation results.
     runs_test_accuracy: accuracy of the model in each iteration specified in test_iterations of every run
     runs_backdoor_success: backdoor success of the model in each iteration specified in test_iterations of every run
     test_iterations: list of iterations the model was evaluated in
     niter: number of iteration the model was trained for
+    save_path: path to save the figure
     """
     test_acc_std = []
     test_acc_list = []
@@ -256,9 +341,11 @@ def plot_results(runs_test_accuracy, runs_backdoor_success, test_iterations, nit
         if args.byz_type == "scaling_attack":
             print("The average final backdoor success rate was: %0.4f with an overall average:" % backdoor_success_list[-1])
             print(repr(backdoor_success_list))
+    
     # Generate plot with two axis displaying accuracy and backdoor success rate over the iterations
+    fig = plt.figure()
     if args.byz_type == "scaling_attack":
-        fig, ax1 = plt.subplots()
+        ax1 = plt.subplot()
 
         ax1.set_xlabel('epochs')
         ax1.set_ylabel('accuracy')
@@ -278,7 +365,6 @@ def plot_results(runs_test_accuracy, runs_backdoor_success, test_iterations, nit
         plt.xlim(0, niter)
         plt.title("Test Accuracy + Backdoor success: " + args.net + ", " + args.dataset + ", " + args.aggregation + ", " + args.byz_type + ", nruns " + str(args.nruns))
         plt.grid()
-        plt.show()
     # Generate plot with only the accuracy as one axis over the iterations
     else:
         plt.plot(test_iterations, test_acc_list, color='C0')
@@ -289,8 +375,15 @@ def plot_results(runs_test_accuracy, runs_backdoor_success, test_iterations, nit
         plt.xlim(0, niter)
         plt.ylim(0, 1)
         plt.grid()
-        plt.show()
-
+    
+    # Save figure if path is provided
+    if save_path:
+        # Make sure directory exists
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    # Show the plot and then clear it
+    plt.show()
 
 def weight_init(m):
     """
@@ -355,6 +448,7 @@ def main(args):
 
     # compile server programm for aggregation in MPC
     if args.mpspdz:
+        mpc_start_time = time.time()
         script, players = get_protocol(args.protocol, args.players)
         args.script, args.players = script, players
 
@@ -384,6 +478,9 @@ def main(args):
         os.system('Scripts/setup-clients.sh 1')
 
         os.chdir("..")
+        mpc_end_time = time.time()
+        mpc_total_time = mpc_end_time - mpc_start_time
+        save_mpc_metrics(args, mpc_total_time)
 
     # perform multiple runs
     for run in range(1, args.nruns+1):
@@ -548,8 +645,15 @@ def main(args):
             print("Run %02d/%02d done with final accuracy: %0.4f and backdoor success rate: %0.4f" % (run, args.nruns, test_acc_list[-1], backdoor_success_list[-1]))
         else:
             print("Run %02d/%02d done with final accuracy: %0.4f" % (run, args.nruns, test_acc_list[-1]))
-
-
+    save_results_to_csv(runs_test_accuracy, runs_backdoor_success, test_iterations, args)
+    plot_results(
+        runs_test_accuracy, 
+        runs_backdoor_success, 
+        test_iterations, 
+        args.niter,
+        save_path=f"results/figures/plot_{args.dataset}_{args.aggregation}_{args.byz_type}_n{args.nruns}.png"
+    )
+    
     del test_acc_list
     test_acc_list = []
 
