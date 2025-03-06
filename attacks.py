@@ -383,17 +383,31 @@ def add_backdoor(data, labels, dataset):
     elif dataset == "MNIST":
         attacker_chosen_target_label = 7  # Target label for MNIST (e.g., digit 7)
         
-        # Add backdoor pattern to data (a small pattern in the corner)
-        for i in range(data.size(dim=0)):
-            for k in range(5):
-                for l in range(5):
-                    pixel_idx = k * 28 + l
-                    data[i][pixel_idx] = 1.0  # White pixels as trigger in top-left corner
+        # Fix the data structure issue for MNIST
+        if data.dim() == 4:  # If data is in [batch, channels, height, width] format
+            # Flatten each image for processing
+            batch_size = data.size(0)
+            flattened_data = data.view(batch_size, -1)
+            
+            # Add backdoor pattern to data (a small pattern in the corner)
+            for i in range(batch_size):
+                for k in range(5):
+                    for l in range(5):
+                        pixel_idx = k * 28 + l
+                        flattened_data[i, pixel_idx] = 1.0  # White pixels as trigger
+            
+            # Reshape back to original format if needed
+            data = flattened_data.view(data.size())
+        else:  # If data is already flattened to [batch, features]
+            # Add backdoor pattern to data
+            for i in range(data.size(0)):
+                for k in range(5):
+                    for l in range(5):
+                        pixel_idx = k * 28 + l
+                        data[i, pixel_idx] = 1.0  # White pixels as trigger
         
         # Set all labels to the target
-        for i in range(len(labels)):
-            labels[i] = attacker_chosen_target_label
-            
+        labels.fill_(attacker_chosen_target_label)
     else:
         raise NotImplementedError
 
