@@ -13,6 +13,7 @@ from sklearn.cluster import KMeans
 import hdbscan
 import copy
 import utils
+import heirichalFL as hfl
 
 # Copyright (c) 2015, Leland McInnes
 # All rights reserved.
@@ -266,6 +267,7 @@ def flame(gradients, net, lr, f, byz, device, epsilon, delta):
 
 
 def shieldfl(gradients, net, lr, f, byz, device, previous_gloabl_gradient, iteration, previous_gradients):
+    
     """
     Based on the description in https://ieeexplore.ieee.org/document/9762272
     gradients: list of gradients.
@@ -278,6 +280,7 @@ def shieldfl(gradients, net, lr, f, byz, device, previous_gloabl_gradient, itera
     iteration: iteration of training process
     previous_gradient: local model updates of previous iteration
     """
+
     kappa = 0  # the paper gave no indication on how to set this parameter
 
     param_list = [torch.cat([xx.reshape((-1, 1)) for xx in x], dim=0) for x in gradients]
@@ -936,3 +939,42 @@ def romoa(gradients, net, lr, f, byz, device, F, prev_global_update, seed):   # 
         idx += torch.numel(param)
 
     return F_t, global_update
+
+
+def heiriechal(gradients, net, lr, f, byz, device, seed, heirichal_params = {"user membership": [], "user score": [], "round": 0, "num groups": 5}):
+    """
+    
+    gradients: list of gradients.
+    net: model parameters.
+    lr: learning rate.
+    f: number of malicious clients. The first f clients are malicious.
+    byz: attack type.
+    device: computation device.
+    seed: seed for random number generator
+    """
+    param_list = [torch.cat([xx.reshape((-1, 1)) for xx in x], dim=0) for x in gradients]
+    # let the malicious clients (first f clients) perform the byzantine attack
+    if byz == attacks.fltrust_attack:
+        param_list = byz(param_list, net, lr, f, device)[:-1]
+    else:
+        param_list = byz(param_list, net, lr, f, device)
+
+    # simulate groups 
+    simulate_groups(heirichal_params, seed)
+
+    group_gradients = aggregate_groups(gradients, net, lr, device, seed, heirichal_params)
+
+    groups_scores = score_groups(group_gradients, heirichal_params) 
+
+    update_user_scores(heirichal_params, groups_scores)
+
+    shuffle_users(heirichal_params, seed)
+
+    # robust
+
+    robust_update = robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params)
+
+
+    
+
+    
