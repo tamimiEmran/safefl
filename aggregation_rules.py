@@ -941,7 +941,7 @@ def romoa(gradients, net, lr, f, byz, device, F, prev_global_update, seed):   # 
     return F_t, global_update
 
 
-def heiriechal(gradients, net, lr, f, byz, device, seed, heirichal_params = {"user membership": [], "user score": [], "round": 0, "num groups": 5}):
+def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params = {"user membership": [], "user score": [], "round": 1, "num groups": 5}):
     """
     
     gradients: list of gradients.
@@ -951,6 +951,7 @@ def heiriechal(gradients, net, lr, f, byz, device, seed, heirichal_params = {"us
     byz: attack type.
     device: computation device.
     seed: seed for random number generator
+    heirichal_params: dictionary containing user membership, user score, round, and number of groups
     """
     param_list = [torch.cat([xx.reshape((-1, 1)) for xx in x], dim=0) for x in gradients]
     # let the malicious clients (first f clients) perform the byzantine attack
@@ -959,22 +960,22 @@ def heiriechal(gradients, net, lr, f, byz, device, seed, heirichal_params = {"us
     else:
         param_list = byz(param_list, net, lr, f, device)
 
-    # simulate groups 
-    simulate_groups(heirichal_params, seed)
+    number_of_users = len(gradients)
 
-    group_gradients = aggregate_groups(gradients, net, lr, device, seed, heirichal_params)
+    # simulate groups 
+    hfl.simulate_groups(heirichal_params,number_of_users, seed)
+
+    group_gradients = hfl.aggregate_groups(gradients, net, lr, device, seed, heirichal_params)
 
     groups_scores = score_groups(group_gradients, heirichal_params) 
 
     update_user_scores(heirichal_params, groups_scores)
 
-    shuffle_users(heirichal_params, seed)
+    hfl.shuffle_users(heirichal_params, number_of_users, seed)
 
     # robust
 
     robust_update = robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params)
 
 
-    
 
-    

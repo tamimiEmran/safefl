@@ -139,6 +139,12 @@ def parse_args():
     parser.add_argument("--dnc_c", help="filtering fraction, percentage of number of malicious clients filtered", type=float, default=1)
     parser.add_argument("--dnc_b", help="dimension of subsamples must be smaller, then the dimension of the gradients", type=int, default=2000)
 
+    #heirichalFL
+    # number of groups
+    parser.add_argument("--n_groups", help="number of groups", type=int, default=5)
+
+
+
     ### Attacks
     parser.add_argument("--nbyz", help="# byzantines", type=int, default=6)
     parser.add_argument("--byz_type", help="type of attack", type=str, default="no", choices=["no", "trim_attack", "krum_attack",
@@ -515,6 +521,15 @@ def main(args):
             previous_global_gradient = torch.cat([param.clone().detach().flatten() for param in net.parameters()]).reshape(-1, 1) + torch.normal(mean=0, std=1e-7, size=(num_params, 1)).to(device)
             sanitization_factor = torch.full(size=(args.nworkers, num_params), fill_value=(1 / args.nworkers)).to(device)  # sanitization factors for Romoa
 
+        elif args.aggregation == "heirichalFL":
+            # number of groups
+            
+            if run == 1:
+                # initialize the parameters for the first run
+                n_groups = args.n_groups
+                heirichal_params = {"user membership": [], "user score": [], "round": 1, "num groups": n_groups}
+            
+
         train_data, test_data = data_loaders.load_data(args.dataset, args.seed)  # load the data
 
         # assign data to the server and clients
@@ -612,6 +627,9 @@ def main(args):
 
                 elif args.aggregation == "romoa":
                     sanitization_factor, previous_global_gradient = aggregation_rules.romoa(grad_list, net, args.lr, args.nbyz, byz, device, F=sanitization_factor, prev_global_update=previous_global_gradient, seed=args.seed)
+
+                elif args.aggregation == "heirichalFL":
+                    heirichal_params = aggregation_rules.heirichalFL(grad_list, net, args.lr, args.nbyz, byz, device, heirichal_params, seed=args.seed)
 
                 else:
                     raise NotImplementedError
