@@ -16,6 +16,14 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 from matplotlib import pyplot as plt
+"""
+NOTE ON THE CODE:
+DOUBLE CHECK IF THAT THE USER SCORES ARE IDICATIVE OF TRUSTWORTHINESS AND NOT MALICIOUSNESS
+THE USER IDS SHOULD START FROM 0 AND BE CONTINUOUS
+
+"""
+
+
 
 def save_results_to_csv(runs_test_accuracy, runs_backdoor_success, test_iterations, args):
     """
@@ -531,8 +539,11 @@ def main(args):
                 # initialize the parameters for the first run
                 n_groups = args.n_groups
                 assumed_mal_prct = args.assumed_mal_prct
-                
-                heirichal_params = {"assumed_mal_prct":assumed_mal_prct , "user membership": [], "user score": [], "round": 0, "num groups": n_groups, "history": [{'round_num': int, 'user_membership': list, 'user_score': list, 'group_gradients': [torch.tensor], 'group_scores': list, 'global_gradient': torch.tensor}]}
+                n_users = args.nworkers
+
+                heirichal_params = {"assumed_mal_prct":assumed_mal_prct , "user membership": [], "user score": [], "round": 0, "num groups": n_groups, \
+                                    "history": [{'round_num': int, 'user_membership': list, 'user_score_adjustment': list, 'group_gradients': [torch.tensor], \
+                                                 'group_scores': list,"user_scores": list}]}
             
 
         train_data, test_data = data_loaders.load_data(args.dataset, args.seed)  # load the data

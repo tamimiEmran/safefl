@@ -1,5 +1,7 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
+import numpy as np
 def simulate_groups(heirichal_params, number_of_users, seed):
     """
     Simulates groups by assigning users to groups and initializing necessary parameters.
@@ -48,7 +50,7 @@ def simulate_groups(heirichal_params, number_of_users, seed):
         heirichal_params["user membership"] = user_membership
     
     # Increment round number
-    heirichal_params["round"] += 1
+    
     
     return heirichal_params
 
@@ -131,84 +133,171 @@ def shuffle_users(heirichal_params, number_of_users, seed):
     return heirichal_params
 
 
-def aggregate_groups(gradients, net, lr, device, seed, heirichal_params):
+def organize_users_by_group(user_group_assignments, total_group_count, user_trust_scores):
     """
-    Aggregates gradients within each group using weighted averaging.
+    Organizes users by their group membership and scores.
     
     Args:
-        gradients: List of gradients from all clients
-        net: Model parameters
-        lr: Learning rate
-        device: Device used for computation
-        seed: Random seed for reproducibility
-        heirichal_params: Dictionary containing hierarchical parameters
+        user_group_assignments: List indicating which group each user belongs to
+        total_group_count: Total number of groups
+        user_trust_scores: List of trust scores for each user
         
     Returns:
-        List of aggregated gradients for each group
+        List of groups, where each group contains tuples of (user_id, trust_score)
     """
+    groups_with_users = [[] for _ in range(total_group_count)]
+    for user_id, group_id in enumerate(user_group_assignments):
+        if user_id < len(user_trust_scores):  # Ensure we don't go out of bounds
+            groups_with_users[group_id].append((user_id, user_trust_scores[user_id]))
+    return groups_with_users
 
-    
-    np.random.seed(seed)
-    
-    # Extract user membership information
-    user_membership = heirichal_params["user membership"]
-    num_groups = heirichal_params["num groups"]
-    
-    # Convert gradients to parameter lists for processing
-    param_list = [torch.cat([xx.reshape((-1, 1)) for xx in x], dim=0) for x in gradients]
-    
-    # Get dimensions of gradient vectors
-    grad_shape = param_list[0].size()
-    
-    # Create a list to store aggregated gradients for each group
-    group_gradients = [torch.zeros(grad_shape).to(device) for _ in range(num_groups)]
-    group_sizes = [0] * num_groups
-    
-    # Assign gradients to their respective groups and count group sizes
-    for client_idx, group_idx in enumerate(user_membership):
-        if client_idx < len(param_list):  # Ensure we don't go out of bounds
-            group_gradients[group_idx] += param_list[client_idx]
-            group_sizes[group_idx] += 1
-    
-    # Average gradients within each group
-    for group_idx in range(num_groups):
-        if group_sizes[group_idx] > 0:
-            group_gradients[group_idx] /= group_sizes[group_idx]
-    
-    return group_gradients
-
-
-
-def score_groups(group_gradients, heirichal_params):
+def filter_malicious_users(groups_with_users, all_user_trust_scores, malicious_percentage, total_user_count):
     """
-    Score groups using a combined adaptive threshold and ensemble voting approach
+    Filters out assumed malicious users globally based on their scores.
     
     Args:
-        group_gradients: List of aggregated gradients for each group
-        heirichal_params: Dictionary containing hierarchical parameters
+        groups_with_users: List of groups, where each group contains tuples of (user_id, trust_score)
+        all_user_trust_scores: List of trust scores for each user
+        malicious_percentage: Percentage of users assumed to be malicious overall
+        total_user_count: Total number of users across all groups
         
     Returns:
-        Dictionary of scores for each group
+        List of valid groups after filtering, where each entry contains
+        the original group_id and list of trusted user indices
     """
-    import torch
-    import torch.nn.functional as F
-    import numpy as np
+    # Calculate total number of users to exclude
+    users_to_exclude_count = max(1, int(malicious_percentage * total_user_count))
     
-    num_groups = heirichal_params["num groups"]
+    # Get indices of users with lowest scores globally
+    all_users_with_scores = [(user_id, score) for user_id, score in enumerate(all_user_trust_scores) if user_id < total_user_count]
+    users_sorted_by_score = sorted(all_users_with_scores, key=lambda x: x[1])
+    malicious_user_ids = set([user[0] for user in users_sorted_by_score[:users_to_exclude_count]])
+    
+    # Filter malicious users from each group
+    filtered_groups_with_ids = []
+    for group_id, group_users in enumerate(groups_with_users):
+        # Keep only trusted users
+        trusted_user_ids = [user_id for user_id, _ in group_users if user_id not in malicious_user_ids]
+        
+        # If after filtering, we have more than 1 user, keep the group
+        if len(trusted_user_ids) > 1:
+            filtered_groups_with_ids.append((group_id, trusted_user_ids))
+    
+    return filtered_groups_with_ids
+
+def compute_group_gradients(filtered_groups_with_ids, user_gradients, gradient_shape, computation_device):
+    """
+    Computes the average gradient for each filtered group.
+    
+    Args:
+        filtered_groups_with_ids: List of valid groups after filtering with their original indices
+        user_gradients: List of parameter gradients for each user
+        gradient_shape: Shape of the gradient tensors
+        computation_device: Device for tensor computations
+        
+    Returns:
+        Dictionary mapping original group indices to their aggregated gradients
+    """
+    # Use a dictionary to maintain the original group indices
+    group_to_gradient_mapping = {}
+    
+    for group_id, trusted_user_ids in filtered_groups_with_ids:
+        if not trusted_user_ids:  # Skip if no users in group (shouldn't happen)
+            continue
+            
+        # Aggregate gradients for this group
+        aggregated_group_gradient = torch.zeros(gradient_shape).to(computation_device)
+        for trusted_user_id in trusted_user_ids:
+            aggregated_group_gradient += user_gradients[trusted_user_id]
+        
+        # Average the gradients
+        aggregated_group_gradient /= len(trusted_user_ids)
+        
+        # Store with original group index
+        group_to_gradient_mapping[group_id] = aggregated_group_gradient
+    
+    return group_to_gradient_mapping
+
+def aggregate_groups(all_user_gradients, computation_device, random_seed, hierarchical_parameters, skip_filtering=False):
+    """
+    Aggregates gradients within each group, optionally excluding assumed malicious users
+    globally and removing groups with only one user after filtering.
+    
+    Args:
+        all_user_gradients: List of gradients from all clients
+        computation_device: Device used for computation
+        random_seed: Random seed for reproducibility
+        hierarchical_parameters: Dictionary containing hierarchical parameters
+        skip_filtering: If True, bypasses the malicious user filtering step
+        
+    Returns:
+        Dictionary mapping group indices to their aggregated gradients
+    """
+    np.random.seed(random_seed)
+    
+    # Extract parameters
+    user_group_assignments = hierarchical_parameters["user membership"]
+    total_group_count = hierarchical_parameters["num groups"]
+    user_trust_scores = hierarchical_parameters["user score"]
+    malicious_percentage = hierarchical_parameters["assumed_mal_prct"]
+    total_user_count = len(all_user_gradients)
+    
+    # Convert gradients to parameter lists
+    user_gradient_vectors = [torch.cat([param.reshape((-1, 1)) for param in gradient], dim=0) for gradient in all_user_gradients]
+    gradient_shape = user_gradient_vectors[0].size()
+    
+    # Process in steps
+    groups_with_users = organize_users_by_group(user_group_assignments, total_group_count, user_trust_scores)
+    
+    if skip_filtering:
+        # Skip filtering step and create a similar structure but with all users
+        filtered_groups_with_ids = []
+        for group_id, group_users in enumerate(groups_with_users):
+            user_ids = [user_id for user_id, _ in group_users]
+            # Only include groups with at least 2 users, consistent with the filtering logic
+            if len(user_ids) > 1:
+                filtered_groups_with_ids.append((group_id, user_ids))
+    else:
+        # Apply normal filtering
+        filtered_groups_with_ids = filter_malicious_users(groups_with_users, user_trust_scores, malicious_percentage, total_user_count)
+    
+    group_to_gradient_mapping = compute_group_gradients(filtered_groups_with_ids, user_gradient_vectors, gradient_shape, computation_device)
+    
+    return group_to_gradient_mapping
+
+
+
+def score_groups(group_to_gradient_mapping, hierarchical_parameters):
+    """
+    Score groups using a combined adaptive threshold and ensemble voting approach,
+    accounting for potentially missing groups.
+    
+    Args:
+        group_to_gradient_mapping: Dictionary mapping group IDs to their aggregated gradients
+        hierarchical_parameters: Dictionary containing hierarchical parameters
+        
+    Returns:
+        Dictionary mapping group IDs to their trust scores
+    """
+    # Get existing group IDs
+    existing_group_ids = list(group_to_gradient_mapping.keys())
+    number_of_existing_groups = len(existing_group_ids)
     
     # Skip scoring if there are too few groups
-    if num_groups < 3:
-        return {i: 1.0 for i in range(num_groups)}
+    if number_of_existing_groups < 3:
+        return {group_id: 1.0 for group_id in existing_group_ids}
     
-    # Calculate pairwise cosine similarities between all groups
-    cos_sim = torch.zeros((num_groups, num_groups), dtype=torch.float32)
+    # Calculate pairwise cosine similarities between all existing groups
+    cos_sim = torch.zeros((number_of_existing_groups, number_of_existing_groups), dtype=torch.float32)
     
-    for i in range(num_groups):
-        for j in range(i+1, num_groups):
+    for i in range(number_of_existing_groups):
+        group_id_i = existing_group_ids[i]
+        for j in range(i+1, number_of_existing_groups):
+            group_id_j = existing_group_ids[j]
             # Calculate cosine similarity between group gradients
             similarity = F.cosine_similarity(
-                group_gradients[i], 
-                group_gradients[j], 
+                group_to_gradient_mapping[group_id_i], 
+                group_to_gradient_mapping[group_id_j], 
                 dim=0, 
                 eps=1e-9
             )
@@ -217,15 +306,108 @@ def score_groups(group_gradients, heirichal_params):
     
     # --- Ensemble Voting ---
     # Each group votes on other groups' trustworthiness
-    votes = torch.zeros(num_groups)
+    group_votes = torch.zeros(number_of_existing_groups)
     
-    for i in range(num_groups):
+    for i in range(number_of_existing_groups):
         # Each group rates others based on their similarity
         similarities = cos_sim[i, :]
         # Don't count self-similarity
         similarities[i] = 0
         # Calculate votes: higher similarity gets more trust
-        votes += similarities
+        group_votes += similarities
+    
+    # Convert votes tensor to dictionary mapping original group IDs to scores
+    group_id_to_score = {
+        existing_group_ids[i]: float(group_votes[i]) 
+        for i in range(number_of_existing_groups)
+    }
+    
+    return group_id_to_score
+
+
+
+def update_user_scores(heirichal_params, groups_scores):
+    user_scores = heirichal_params["user_score"]
+    number_of_groups = heirichal_params["num groups"]
+
+    # create a list similar in length to the user scores
+    # and initialize it with zeros
+    user_scores_adjustments = [0.0] * len(user_scores)
+    current_user_scores = [0.0] * len(user_scores)
+
+    # Sort groups by their scores
+    group_ranking = sorted(groups_scores, key=groups_scores.get, reverse=True)
+
+    # Calculate the middle point for determining positive/negative adjustments
+    mid_point = (number_of_groups - 1) / 2
+
+    # Create mapping of group_id to score adjustment
+    # Groups above middle point get positive scores, below get negative
+    group_adjustments = {
+        group_id: (mid_point - rank) / number_of_groups
+        for rank, group_id in enumerate(group_ranking)
+    }
+
+    # Update each user's score based on their group's adjustment
+    for user_id, group_id in enumerate(heirichal_params["user membership"]):
+        user_scores[user_id] += group_adjustments[group_id]
+        user_scores_adjustments[user_id] = group_adjustments[group_id]
+        current_user_scores[user_id] = user_scores[user_id]
 
     
-    return [float(v) for v in votes]
+    heirichal_params["user score"] = user_scores
+
+    return heirichal_params, user_scores_adjustments, current_user_scores
+
+
+    
+def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params):
+    """
+    Implements a robust aggregation mechanism for group gradients.
+    
+    Args:
+        group_gradients: List of aggregated gradients for each group
+        net: Model used for training
+        lr: Learning rate for the optimizer
+        device: Device used for computation
+        heirichal_params: Dictionary containing hierarchical parameters
+        
+    Returns:
+        global_update: The robustly aggregated update vector
+    """
+    import torch
+    
+    # Calculate L2 norm for each group gradient
+    group_norms = [torch.norm(grad, p=2) for grad in group_gradients]
+    
+    # Find median L2 norm
+    median_norm = torch.median(torch.tensor(group_norms))
+    
+    # Filter groups with L2 norms below or equal to median
+    filtered_gradients = []
+    for i, grad in enumerate(group_gradients):
+        if group_norms[i] <= median_norm:
+            # Scale down gradients by l2Current/l2Median
+            scaling_factor = group_norms[i] / median_norm
+            filtered_gradients.append(grad * scaling_factor)
+    
+    # If all gradients were filtered out, use median
+    if len(filtered_gradients) == 0:
+        # Find median gradient
+        median_idx = torch.argsort(torch.tensor(group_norms))[len(group_norms) // 2]
+        global_update = group_gradients[median_idx]
+    else:
+        # Average the filtered and scaled gradients
+        global_update = torch.zeros_like(group_gradients[0]).to(device)
+        for grad in filtered_gradients:
+            global_update += grad
+        global_update /= len(filtered_gradients)
+    
+    # Update the global model
+    idx = 0
+    for j, param in enumerate(net.parameters()):
+        param.add_(global_update[idx:(idx + torch.numel(param))].reshape(tuple(param.size())), alpha=-lr)
+        idx += torch.numel(param)
+    
+    
+    return global_update

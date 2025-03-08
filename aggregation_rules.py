@@ -963,10 +963,15 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
     
     for element in heirichal_params['history']:
         for key in element:
-            if key not in ['round_num', 'user_membership', 'user_score', 'group_gradients', 'group_scores', 'global_gradient']:
+            if key not in ['round_num', 'user_membership', 'user_score_adjustment', 'group_scores', 'global_gradient', "user_scores"]:
                 raise ValueError(f"history should have the key {key}")
-            
-    
+
+
+    heirichal_params['round'] += 1
+
+    current_round_record = {
+        "round_num": heirichal_params['round']
+    }
 
 
     param_list = [torch.cat([xx.reshape((-1, 1)) for xx in x], dim=0) for x in gradients]
@@ -979,24 +984,39 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
     number_of_users = len(gradients)
 
     # simulate groups 
-    hfl.simulate_groups(heirichal_params,number_of_users, seed)
-    # remove malicious users
+    heirichal_params = hfl.simulate_groups(heirichal_params,number_of_users, seed)
+    
+    group_gradients_for_scoring = hfl.aggregate_groups(gradients, net, lr, device, seed, heirichal_params, skip_filtering=True)
 
-    group_gradients = hfl.aggregate_groups(gradients, net, lr, device, seed, heirichal_params)
-    # make sure groups have more than 1 user
 
-    groups_scores = score_groups(group_gradients, heirichal_params) 
+    groups_scores = hfl.score_groups(group_gradients_for_scoring, heirichal_params) 
     # save scores for future rounds
 
-    update_user_scores(heirichal_params, groups_scores)
+    current_round_record["group_scores"] = copy.deepcopy(groups_scores)
+
+
+
+
+    heirichal_params, user_scores_adjustments, current_user_scores = hfl.update_user_scores(heirichal_params, groups_scores)
     # use previous scores aswell with baysian update
+    current_round_record["user_score_adjustment"] = copy.deepcopy(user_scores_adjustments)
+    current_round_record["user_scores"] = copy.deepcopy(current_user_scores)
 
-    hfl.shuffle_users(heirichal_params, number_of_users, seed)
+    group_gradients = hfl.aggregate_groups(gradients, net, lr, device, seed, heirichal_params)
 
-    # robust
+    current_round_record["user_membership"] = copy.deepcopy(heirichal_params['user_membership'])
 
-    robust_update = robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params)
+    heirichal_params = hfl.shuffle_users(heirichal_params, number_of_users, seed)
+
+
+
+    robust_update = hfl.robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params)
     # use l2norm/medianNorm to scale the updates 
+
+    current_user_scores["global_gradient"] = robust_update.clone().detach()
+
+
+    heirichal_params['history'].append(current_round_record)
 
 
 
