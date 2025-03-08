@@ -941,7 +941,7 @@ def romoa(gradients, net, lr, f, byz, device, F, prev_global_update, seed):   # 
     return F_t, global_update
 
 
-def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params = {"user membership": [], "user score": [], "round": 1, "num groups": 5}):
+def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
     """
     
     gradients: list of gradients.
@@ -953,6 +953,22 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params = {"u
     seed: seed for random number generator
     heirichal_params: dictionary containing user membership, user score, round, and number of groups
     """
+
+    # make sure the heirichal_params has the following keys (user_membership, user_score, round, num_groups, history)
+    # and make sure that history is a list of dictionaries containing the keys (round_num, user_membership, user_score, group_gradients, group_scores, global_gradient)
+    
+    for key in heirichal_params:
+        if key not in ["assumed_mal_prct",'user_membership', 'user_score', 'round', 'num_groups', 'history']:
+            raise ValueError(f"heirichal_params should have the key {key}")
+    
+    for element in heirichal_params['history']:
+        for key in element:
+            if key not in ['round_num', 'user_membership', 'user_score', 'group_gradients', 'group_scores', 'global_gradient']:
+                raise ValueError(f"history should have the key {key}")
+            
+    
+
+
     param_list = [torch.cat([xx.reshape((-1, 1)) for xx in x], dim=0) for x in gradients]
     # let the malicious clients (first f clients) perform the byzantine attack
     if byz == attacks.fltrust_attack:
@@ -964,18 +980,23 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params = {"u
 
     # simulate groups 
     hfl.simulate_groups(heirichal_params,number_of_users, seed)
+    # remove malicious users
 
     group_gradients = hfl.aggregate_groups(gradients, net, lr, device, seed, heirichal_params)
+    # make sure groups have more than 1 user
 
     groups_scores = score_groups(group_gradients, heirichal_params) 
+    # save scores for future rounds
 
     update_user_scores(heirichal_params, groups_scores)
+    # use previous scores aswell with baysian update
 
     hfl.shuffle_users(heirichal_params, number_of_users, seed)
 
     # robust
 
     robust_update = robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params)
+    # use l2norm/medianNorm to scale the updates 
 
 
 

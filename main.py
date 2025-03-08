@@ -142,6 +142,9 @@ def parse_args():
     #heirichalFL
     # number of groups
     parser.add_argument("--n_groups", help="number of groups", type=int, default=5)
+    #assumed number of malcious users percentage. assumed_mal_prct
+    parser.add_argument("--assumed_mal_prct", help="assumed number of malcious users percentage", type=float, default=0.1)
+
 
 
 
@@ -527,7 +530,9 @@ def main(args):
             if run == 1:
                 # initialize the parameters for the first run
                 n_groups = args.n_groups
-                heirichal_params = {"user membership": [], "user score": [], "round": 1, "num groups": n_groups}
+                assumed_mal_prct = args.assumed_mal_prct
+                
+                heirichal_params = {"assumed_mal_prct":assumed_mal_prct , "user membership": [], "user score": [], "round": 0, "num groups": n_groups, "history": [{'round_num': int, 'user_membership': list, 'user_score': list, 'group_gradients': [torch.tensor], 'group_scores': list, 'global_gradient': torch.tensor}]}
             
 
         train_data, test_data = data_loaders.load_data(args.dataset, args.seed)  # load the data

@@ -1,5 +1,5 @@
 import numpy as np
-
+import torch
 def simulate_groups(heirichal_params, number_of_users, seed):
     """
     Simulates groups by assigning users to groups and initializing necessary parameters.
@@ -131,3 +131,101 @@ def shuffle_users(heirichal_params, number_of_users, seed):
     return heirichal_params
 
 
+def aggregate_groups(gradients, net, lr, device, seed, heirichal_params):
+    """
+    Aggregates gradients within each group using weighted averaging.
+    
+    Args:
+        gradients: List of gradients from all clients
+        net: Model parameters
+        lr: Learning rate
+        device: Device used for computation
+        seed: Random seed for reproducibility
+        heirichal_params: Dictionary containing hierarchical parameters
+        
+    Returns:
+        List of aggregated gradients for each group
+    """
+
+    
+    np.random.seed(seed)
+    
+    # Extract user membership information
+    user_membership = heirichal_params["user membership"]
+    num_groups = heirichal_params["num groups"]
+    
+    # Convert gradients to parameter lists for processing
+    param_list = [torch.cat([xx.reshape((-1, 1)) for xx in x], dim=0) for x in gradients]
+    
+    # Get dimensions of gradient vectors
+    grad_shape = param_list[0].size()
+    
+    # Create a list to store aggregated gradients for each group
+    group_gradients = [torch.zeros(grad_shape).to(device) for _ in range(num_groups)]
+    group_sizes = [0] * num_groups
+    
+    # Assign gradients to their respective groups and count group sizes
+    for client_idx, group_idx in enumerate(user_membership):
+        if client_idx < len(param_list):  # Ensure we don't go out of bounds
+            group_gradients[group_idx] += param_list[client_idx]
+            group_sizes[group_idx] += 1
+    
+    # Average gradients within each group
+    for group_idx in range(num_groups):
+        if group_sizes[group_idx] > 0:
+            group_gradients[group_idx] /= group_sizes[group_idx]
+    
+    return group_gradients
+
+
+
+def score_groups(group_gradients, heirichal_params):
+    """
+    Score groups using a combined adaptive threshold and ensemble voting approach
+    
+    Args:
+        group_gradients: List of aggregated gradients for each group
+        heirichal_params: Dictionary containing hierarchical parameters
+        
+    Returns:
+        Dictionary of scores for each group
+    """
+    import torch
+    import torch.nn.functional as F
+    import numpy as np
+    
+    num_groups = heirichal_params["num groups"]
+    
+    # Skip scoring if there are too few groups
+    if num_groups < 3:
+        return {i: 1.0 for i in range(num_groups)}
+    
+    # Calculate pairwise cosine similarities between all groups
+    cos_sim = torch.zeros((num_groups, num_groups), dtype=torch.float32)
+    
+    for i in range(num_groups):
+        for j in range(i+1, num_groups):
+            # Calculate cosine similarity between group gradients
+            similarity = F.cosine_similarity(
+                group_gradients[i], 
+                group_gradients[j], 
+                dim=0, 
+                eps=1e-9
+            )
+            # Store similarity (symmetric matrix)
+            cos_sim[i, j] = cos_sim[j, i] = similarity
+    
+    # --- Ensemble Voting ---
+    # Each group votes on other groups' trustworthiness
+    votes = torch.zeros(num_groups)
+    
+    for i in range(num_groups):
+        # Each group rates others based on their similarity
+        similarities = cos_sim[i, :]
+        # Don't count self-similarity
+        similarities[i] = 0
+        # Calculate votes: higher similarity gets more trust
+        votes += similarities
+
+    
+    return [float(v) for v in votes]
