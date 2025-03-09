@@ -218,6 +218,98 @@ def compute_group_gradients(filtered_groups_with_ids, user_gradients, gradient_s
     
     return group_to_gradient_mapping
 
+
+
+def find_most_trusted_group(groups_with_users, user_scores):
+    """
+    Identifies the most trusted group based on average user trust scores.
+    
+    Args:
+        groups_with_users: List of groups, each containing tuples of (user_id, score)
+        user_scores: List of trust scores for all users
+        
+    Returns:
+        Tuple of (most_trusted_group_id, trusted_user_ids), or (0, []) if no valid groups
+    """
+    # Calculate average trust score for each group
+    group_trust_scores = {}
+    for group_id, group_users in enumerate(groups_with_users):
+        if len(group_users) > 0:
+            group_avg_score = sum(score for _, score in group_users) / len(group_users)
+            group_trust_scores[group_id] = group_avg_score
+    
+    if not group_trust_scores:
+        return 0, []  # Return default group ID and empty list instead of None
+        
+    # Find most trusted group
+    most_trusted_group = max(group_trust_scores.items(), key=lambda x: x[1])[0]
+    trusted_user_ids = [user_id for user_id, _ in groups_with_users[most_trusted_group]]
+    
+    return most_trusted_group, trusted_user_ids
+
+
+def select_top_trusted_users(trusted_user_ids, user_scores, proportion=0.5):
+    """
+    Selects the top trusted users from a group based on their trust scores.
+    
+    Args:
+        trusted_user_ids: List of user IDs
+        user_scores: List of trust scores for all users
+        proportion: Proportion of users to select (default 0.5)
+        
+    Returns:
+        List of selected user IDs
+    """
+    if len(trusted_user_ids) <= 1:
+        return trusted_user_ids
+        
+    user_scores_pairs = [(user_id, user_scores[user_id]) for user_id in trusted_user_ids]
+    user_scores_pairs.sort(key=lambda x: x[1], reverse=True)
+    
+    # Select top proportion of users (at least 1)
+    top_count = max(int(len(user_scores_pairs) * proportion), 1)
+    return [user_id for user_id, _ in user_scores_pairs[:top_count]]
+
+
+def handle_filtering_fallback(groups_with_users, user_scores):
+    """
+    Provides fallback strategies when all groups are filtered out.
+    
+    Args:
+        groups_with_users: List of groups, each containing tuples of (user_id, score)
+        user_scores: List of trust scores for all users
+        
+    Returns:
+        List of tuples (group_id, user_ids) for valid groups
+    """
+    # Try most trusted group first
+    most_trusted_group, trusted_user_ids = find_most_trusted_group(groups_with_users, user_scores)
+    
+    if len(trusted_user_ids) > 1:  # Check length instead of None
+        best_user_ids = select_top_trusted_users(trusted_user_ids, user_scores)
+        if len(best_user_ids) > 1:
+            return [(most_trusted_group, best_user_ids)]
+    
+    # Try largest group as fallback
+    if groups_with_users:
+        largest_group_id = max(range(len(groups_with_users)), 
+                              key=lambda i: len(groups_with_users[i]))
+        largest_group_users = [user_id for user_id, _ in groups_with_users[largest_group_id]]
+        
+        if len(largest_group_users) > 1:
+            return [(largest_group_id, largest_group_users)]
+    
+    # Ultimate fallback - use all users across all groups
+    all_users = []
+    for group in groups_with_users:
+        all_users.extend([user_id for user_id, _ in group])
+    
+    if all_users:
+        return [(0, all_users)]
+    
+    return []
+
+
 def aggregate_groups(all_user_gradients, computation_device, random_seed, hierarchical_parameters, skip_filtering=False):
     """
     Aggregates gradients within each group, optionally excluding assumed malicious users
@@ -246,21 +338,26 @@ def aggregate_groups(all_user_gradients, computation_device, random_seed, hierar
     user_gradient_vectors = [torch.cat([param.reshape((-1, 1)) for param in gradient], dim=0) for gradient in all_user_gradients]
     gradient_shape = user_gradient_vectors[0].size()
     
-    # Process in steps
+    # Organize users by group
     groups_with_users = organize_users_by_group(user_group_assignments, total_group_count, user_trust_scores)
     
     if skip_filtering:
-        # Skip filtering step and create a similar structure but with all users
+        # Skip filtering step
         filtered_groups_with_ids = []
         for group_id, group_users in enumerate(groups_with_users):
             user_ids = [user_id for user_id, _ in group_users]
-            # Only include groups with at least 2 users, consistent with the filtering logic
             if len(user_ids) > 1:
                 filtered_groups_with_ids.append((group_id, user_ids))
     else:
         # Apply normal filtering
         filtered_groups_with_ids = filter_malicious_users(groups_with_users, user_trust_scores, malicious_percentage, total_user_count)
     
+    # Check if we have any valid groups after filtering
+    if len(filtered_groups_with_ids) == 0:
+        print("Warning: All groups were filtered out. Using fallback strategy.")
+        filtered_groups_with_ids = handle_filtering_fallback(groups_with_users, user_trust_scores)
+    
+    # Compute gradients for each group
     group_to_gradient_mapping = compute_group_gradients(filtered_groups_with_ids, user_gradient_vectors, gradient_shape, computation_device)
     
     return group_to_gradient_mapping

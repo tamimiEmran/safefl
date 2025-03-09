@@ -1013,10 +1013,12 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
     robust_update = hfl.robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params)
     # use l2norm/medianNorm to scale the updates 
 
-    current_user_scores["global_gradient"] = robust_update.clone().detach()
+    current_round_record["global_gradient"] = robust_update.clone().detach()
 
 
     heirichal_params['history'].append(current_round_record)
+
+    return heirichal_params
 
 
 
