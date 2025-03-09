@@ -2,6 +2,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import numpy as np
+
+isGroupGradientsToBeAveraged = False 
+bypass_robust=False # normalizes groups gradients and averages them
+simple_average=True # simple average of group gradients
+
 def simulate_groups(heirichal_params, number_of_users, seed):
     """
     Simulates groups by assigning users to groups and initializing necessary parameters.
@@ -211,8 +216,9 @@ def compute_group_gradients(filtered_groups_with_ids, user_gradients, gradient_s
             aggregated_group_gradient += user_gradients[trusted_user_id]
         
         # Average the gradients
-        aggregated_group_gradient /= len(trusted_user_ids)
-        
+        if isGroupGradientsToBeAveraged:
+            aggregated_group_gradient /= len(trusted_user_ids)
+            
         # Store with original group index
         group_to_gradient_mapping[group_id] = aggregated_group_gradient
     
@@ -308,6 +314,9 @@ def handle_filtering_fallback(groups_with_users, user_scores):
         return [(0, all_users)]
     
     return []
+
+
+#group_gradients_for_scoring = hfl.aggregate_groups(gradients, device, seed, heirichal_params, skip_filtering=True)
 
 
 def aggregate_groups(all_user_gradients, computation_device, random_seed, hierarchical_parameters, skip_filtering=False):
@@ -424,7 +433,7 @@ def score_groups(group_to_gradient_mapping, hierarchical_parameters):
 
 
 def update_user_scores(heirichal_params, groups_scores):
-    user_scores = heirichal_params["user_score"]
+    user_scores = heirichal_params["user score"]
     number_of_groups = heirichal_params["num groups"]
 
     # create a list similar in length to the user scores
@@ -463,48 +472,84 @@ def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params
     Implements a robust aggregation mechanism for group gradients.
     
     Args:
-        group_gradients: List of aggregated gradients for each group
+        group_gradients: Dictionary mapping group IDs to their aggregated gradients
         net: Model used for training
         lr: Learning rate for the optimizer
         device: Device used for computation
         heirichal_params: Dictionary containing hierarchical parameters
+        bypass_robust: If True, bypasses the robust filtering mechanism
+        simple_average: If True, uses a simple average of all gradients
         
     Returns:
         global_update: The robustly aggregated update vector
     """
     import torch
     
-    # Calculate L2 norm for each group gradient
-    group_norms = [torch.norm(grad, p=2) for grad in group_gradients]
+    # Verify we have gradients to work with
+    if not group_gradients:
+        raise ValueError("No group gradients available for aggregation")
     
-    # Find median L2 norm
-    median_norm = torch.median(torch.tensor(group_norms))
-    
-    # Filter groups with L2 norms below or equal to median
-    filtered_gradients = []
-    for i, grad in enumerate(group_gradients):
-        if group_norms[i] <= median_norm:
-            # Scale down gradients by l2Current/l2Median
-            scaling_factor = group_norms[i] / median_norm
-            filtered_gradients.append(grad * scaling_factor)
-    
-    # If all gradients were filtered out, use median
-    if len(filtered_gradients) == 0:
-        # Find median gradient
-        median_idx = torch.argsort(torch.tensor(group_norms))[len(group_norms) // 2]
-        global_update = group_gradients[median_idx]
-    else:
-        # Average the filtered and scaled gradients
-        global_update = torch.zeros_like(group_gradients[0]).to(device)
-        for grad in filtered_gradients:
+    # Simple averaging of all gradients if requested
+    if simple_average:
+        first_grad = next(iter(group_gradients.values()))
+        global_update = torch.zeros_like(first_grad).to(device)
+        for grad in group_gradients.values():
             global_update += grad
-        global_update /= len(filtered_gradients)
+        global_update /= len(group_gradients)
+        
+    # Skip robust aggregation if requested
+    elif bypass_robust:
+        # Calculate L2 norm for each group gradient
+        group_norms = {group_id: torch.norm(grad, p=2) for group_id, grad in group_gradients.items()}
+        
+        # Normalize all gradients by their norms
+        normalized_gradients = {}
+        for group_id, grad in group_gradients.items():
+            normalized_gradients[group_id] = grad / group_norms[group_id]
+        
+        # Average the normalized gradients
+        first_grad = next(iter(normalized_gradients.values()))
+        global_update = torch.zeros_like(first_grad).to(device)
+        for grad in normalized_gradients.values():
+            global_update += grad
+        global_update /= len(normalized_gradients)
+        
+    # Use robust aggregation
+    else:
+        # Calculate L2 norm for each group gradient
+        group_norms = {group_id: torch.norm(grad, p=2) for group_id, grad in group_gradients.items()}
+        
+        # Find median L2 norm
+        median_norm = torch.median(torch.tensor(list(group_norms.values())))
+        
+        # Filter groups with L2 norms below or equal to median
+        filtered_gradients = {}
+        for group_id, grad in group_gradients.items():
+            if group_norms[group_id] <= median_norm:
+                # Scale down gradients by l2Current/l2Median
+                scaling_factor = group_norms[group_id] / median_norm
+                filtered_gradients[group_id] = grad * scaling_factor
+        
+        # If all gradients were filtered out, use median
+        if len(filtered_gradients) == 0:
+            # Find median gradient by sorting norm values
+            sorted_group_ids = [group_id for group_id, _ in 
+                              sorted(group_norms.items(), key=lambda item: item[1])]
+            median_idx = len(sorted_group_ids) // 2
+            median_group_id = sorted_group_ids[median_idx]
+            global_update = group_gradients[median_group_id]
+        else:
+            # Average the filtered and scaled gradients
+            first_grad = next(iter(filtered_gradients.values()))
+            global_update = torch.zeros_like(first_grad).to(device)
+            for grad in filtered_gradients.values():
+                global_update += grad
+            global_update /= len(filtered_gradients)
     
     # Update the global model
     idx = 0
     for j, param in enumerate(net.parameters()):
         param.add_(global_update[idx:(idx + torch.numel(param))].reshape(tuple(param.size())), alpha=-lr)
         idx += torch.numel(param)
-    
     
     return global_update

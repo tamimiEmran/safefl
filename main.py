@@ -400,7 +400,7 @@ def plot_results(runs_test_accuracy, runs_backdoor_success, test_iterations, nit
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     
     # Show the plot and then clear it
-    plt.show()
+    #plt.show()
 
 def weight_init(m):
     """
@@ -542,8 +542,8 @@ def main(args):
                 n_users = args.nworkers
 
                 heirichal_params = {"assumed_mal_prct":assumed_mal_prct , "user membership": [], "user score": [], "round": 0, "num groups": n_groups, \
-                                    "history": [{'round_num': int, 'user_membership': list, 'user_score_adjustment': list, 'group_gradients': [torch.tensor], \
-                                                 'group_scores': list,"user_scores": list}]}
+                                    "history": [{'round_num': int, 'user_membership': list, 'user_score_adjustment': list, \
+                                                 'group_scores': list,"user_scores": list, "global_gradient": torch.tensor}]}
             
 
         train_data, test_data = data_loaders.load_data(args.dataset, args.seed)  # load the data

@@ -9,12 +9,13 @@ os.makedirs("results/figures", exist_ok=True)
 # Common parameters for all protocols
 common_params = [
     "--dataset", "MNIST",
-    "--niter", "100",
-    "--test_every", "5",
-    "--nbyz", "6",
+    "--niter", "1000",
+    "--test_every", "10",
+    "--nbyz", "0",
     "--nruns", "1",
     "--seed", "42",
-    "--nworkers", "50"
+    "--nworkers", "50",
+    "--batch_size", "8"
     #"--byz_type", "trim_attack"
     ]
 
@@ -33,7 +34,7 @@ protocols = {
         ],
         "heirichalFL": [
             "--aggregation", "heirichalFL",
-            "--n_groups", "5",
+            "--n_groups", "10",
             "--assumed_mal_prct", "0.1"
         ],
         "fltrust": [
@@ -70,6 +71,9 @@ def run_protocol(name, params):
     end_time = time.time()
     print(f"Execution time: {end_time - start_time:.2f} seconds")
 
+
+# make heirichalFL the first protocol to run
+protocols = {k: protocols[k] for k in ["heirichalFL", "flame", "divide_and_conquer", "fltrust"]}
 # Run each protocol
 for protocol_name, protocol_params in protocols.items():
     run_protocol(protocol_name, protocol_params)

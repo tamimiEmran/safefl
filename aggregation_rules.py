@@ -940,8 +940,7 @@ def romoa(gradients, net, lr, f, byz, device, F, prev_global_update, seed):   # 
 
     return F_t, global_update
 
-
-def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
+def heirichalFL(gradients, net, lr, f, byz, device,  heirichal_params, seed):
     """
     
     gradients: list of gradients.
@@ -956,14 +955,22 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
 
     # make sure the heirichal_params has the following keys (user_membership, user_score, round, num_groups, history)
     # and make sure that history is a list of dictionaries containing the keys (round_num, user_membership, user_score, group_gradients, group_scores, global_gradient)
-    
+    """
+                    heirichal_params = {"assumed_mal_prct":assumed_mal_prct , "user membership": [], "user score": [], "round": 0, "num groups": n_groups, \
+                                    "history": [{'round_num': int, 'user_membership': list, 'user_score_adjustment': list, \
+                                                 'group_scores': list,"user_scores": list}]}
+    """
+
+
     for key in heirichal_params:
-        if key not in ["assumed_mal_prct",'user_membership', 'user_score', 'round', 'num_groups', 'history']:
+        if key not in ["assumed_mal_prct",'user membership', 'user score', 'round', 'num groups', 'history']:
+            print(f"heirichal_params should have the key {key}")
             raise ValueError(f"heirichal_params should have the key {key}")
     
     for element in heirichal_params['history']:
         for key in element:
             if key not in ['round_num', 'user_membership', 'user_score_adjustment', 'group_scores', 'global_gradient', "user_scores"]:
+                print(f"history should have the key {key}")
                 raise ValueError(f"history should have the key {key}")
 
 
@@ -973,6 +980,9 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
         "round_num": heirichal_params['round']
     }
 
+    skip_filtering = True
+    if (heirichal_params['round'] < 20):
+        skip_filtering = True
 
     param_list = [torch.cat([xx.reshape((-1, 1)) for xx in x], dim=0) for x in gradients]
     # let the malicious clients (first f clients) perform the byzantine attack
@@ -986,7 +996,7 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
     # simulate groups 
     heirichal_params = hfl.simulate_groups(heirichal_params,number_of_users, seed)
     
-    group_gradients_for_scoring = hfl.aggregate_groups(gradients, net, lr, device, seed, heirichal_params, skip_filtering=True)
+    group_gradients_for_scoring = hfl.aggregate_groups(gradients, device, seed, heirichal_params, skip_filtering=True)
 
 
     groups_scores = hfl.score_groups(group_gradients_for_scoring, heirichal_params) 
@@ -1002,16 +1012,21 @@ def heirichalFL(gradients, net, lr, f, byz, device, seed, heirichal_params):
     current_round_record["user_score_adjustment"] = copy.deepcopy(user_scores_adjustments)
     current_round_record["user_scores"] = copy.deepcopy(current_user_scores)
 
-    group_gradients = hfl.aggregate_groups(gradients, net, lr, device, seed, heirichal_params)
+    group_gradients = hfl.aggregate_groups(gradients, device, seed, heirichal_params)
 
-    current_round_record["user_membership"] = copy.deepcopy(heirichal_params['user_membership'])
+    current_round_record["user_membership"] = copy.deepcopy(heirichal_params['user membership'])
 
     heirichal_params = hfl.shuffle_users(heirichal_params, number_of_users, seed)
 
+    if len(group_gradients) == 0:
+        skip_filtering = True
 
+    if skip_filtering:
+        # if there are no gradients in the group_gradients then use the group_gradients_for_scoring to compute the global gradient
+        group_gradients = group_gradients_for_scoring
 
     robust_update = hfl.robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params)
-    # use l2norm/medianNorm to scale the updates 
+
 
     current_round_record["global_gradient"] = robust_update.clone().detach()
 
