@@ -9,7 +9,7 @@ os.makedirs("results/figures", exist_ok=True)
 # Common parameters for all protocols
 common_params = [
     "--dataset", "MNIST",
-    "--niter", "1000",
+    "--niter", "200",
     "--test_every", "10",
     "--nbyz", "0",
     "--nruns", "1",
@@ -34,13 +34,17 @@ protocols = {
         ],
         "heirichalFL": [
             "--aggregation", "heirichalFL",
-            "--n_groups", "10",
-            "--assumed_mal_prct", "0.1"
+            "--n_groups", "1",
+            "--assumed_mal_prct", "0.0"
         ],
         "fltrust": [
             "--aggregation", "fltrust",
             "--server_pc", "100"
+        ],
+        "fedavg": [
+            "--aggregation", "fedavg"
         ]
+
     }
 
 def run_protocol(name, params):
@@ -73,7 +77,7 @@ def run_protocol(name, params):
 
 
 # make heirichalFL the first protocol to run
-protocols = {k: protocols[k] for k in ["heirichalFL", "flame", "divide_and_conquer", "fltrust"]}
+protocols = {k: protocols[k] for k in ["fedavg", "heirichalFL", "flame", "divide_and_conquer", "fltrust"][1:]}
 # Run each protocol
 for protocol_name, protocol_params in protocols.items():
     run_protocol(protocol_name, protocol_params)

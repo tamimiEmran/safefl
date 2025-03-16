@@ -2,10 +2,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import numpy as np
-
+import copy 
 isGroupGradientsToBeAveraged = False 
-bypass_robust=False # normalizes groups gradients and averages them
+bypass_robust=False # normalizes groups gradients and sums them
 simple_average=True # simple average of group gradients
+averageOverGroupLen=False # average over group length, else average over number of users
+skip_filtering = True # skip filtering of malicious users
+
 
 def simulate_groups(heirichal_params, number_of_users, seed):
     """
@@ -17,45 +20,47 @@ def simulate_groups(heirichal_params, number_of_users, seed):
         number_of_users: Number of users/clients in the system
         seed: Random seed for reproducibility
     """
-    # Set random seed for reproducibility
-    np.random.seed(seed)
-    
+
+
     round_num = heirichal_params["round"]
     num_groups = heirichal_params["num groups"]
-    
+    if round_num != 1:
+        return heirichal_params
+
     # Initialize user membership and scores if first round
-    if round_num == 1:
-        # Initialize user scores with 0.0 for all users
-        heirichal_params["user score"] = [0.0] * number_of_users
-        
-        # Create array of user indices and shuffle it
-        user_indices = np.arange(number_of_users)
-        np.random.shuffle(user_indices)
-        
-        # Calculate base number of users per group and remainder
-        base_per_group = number_of_users // num_groups
-        remainder = number_of_users % num_groups
-        
-        # Assign users to groups ensuring equal distribution
-        user_membership = [0] * number_of_users
-        start_idx = 0
-        
-        for group_id in range(num_groups):
-            # Add one extra user to some groups if there's a remainder
-            group_size = base_per_group + (1 if group_id < remainder else 0)
-            end_idx = start_idx + group_size
-            
-            # Assign this range of users to the current group
-            for idx in range(start_idx, end_idx):
-                if idx < number_of_users:
-                    user_membership[user_indices[idx]] = group_id
-            
-            start_idx = end_idx
-        
-        heirichal_params["user membership"] = user_membership
+
+    # Initialize user scores with 0.0 for all users
+    heirichal_params["user score"] = [0.0] * number_of_users
     
-    # Increment round number
+    # Create array of user indices and shuffle it
+    user_indices = np.arange(number_of_users)
+    rng = np.random.RandomState(seed)
+    rng.shuffle(user_indices)
+        
+    # Calculate base number of users per group and remainder
+    base_per_group = number_of_users // num_groups
+    remainder = number_of_users % num_groups
     
+    # Assign users to groups ensuring equal distribution
+    user_membership = [0] * number_of_users
+    start_idx = 0
+    
+    for group_id in range(num_groups):
+        # Add one extra user to some groups if there's a remainder
+        group_size = base_per_group + (1 if group_id < remainder else 0)
+        end_idx = start_idx + group_size
+        
+        # Assign this range of users to the current group
+        for idx in range(start_idx, end_idx):
+            if idx < number_of_users:
+                user_membership[user_indices[idx]] = group_id
+        
+        start_idx = end_idx
+    
+    heirichal_params["user membership"] = user_membership
+    
+    #double check that all users are assigned to a group
+    assert len(heirichal_params["user membership"]) == number_of_users, "All users must be assigned to a group  "
     
     return heirichal_params
 
@@ -170,6 +175,18 @@ def filter_malicious_users(groups_with_users, all_user_trust_scores, malicious_p
         List of valid groups after filtering, where each entry contains
         the original group_id and list of trusted user indices
     """
+    # if malicious percentage is 0, return all groups
+    if (round(malicious_percentage, 3) == 0.000) or  skip_filtering :
+        
+        filtered_groups_with_ids = []
+        for group_id, group_users in enumerate(groups_with_users):
+            user_ids = [user_id for user_id, _ in group_users]
+            filtered_groups_with_ids.append((group_id, user_ids))
+
+        # make sure all original users are included
+        assert sum([len(group[1]) for group in filtered_groups_with_ids]) == total_user_count, "All users must be included"
+        return filtered_groups_with_ids
+
     # Calculate total number of users to exclude
     users_to_exclude_count = max(1, int(malicious_percentage * total_user_count))
     
@@ -221,6 +238,10 @@ def compute_group_gradients(filtered_groups_with_ids, user_gradients, gradient_s
             
         # Store with original group index
         group_to_gradient_mapping[group_id] = aggregated_group_gradient
+
+    
+    assert len(group_to_gradient_mapping) == len(filtered_groups_with_ids), "All groups must have gradients"
+    assert len(group_to_gradient_mapping.keys()) == 1, "Only one group should be present in debugging"
     
     return group_to_gradient_mapping
 
@@ -319,13 +340,13 @@ def handle_filtering_fallback(groups_with_users, user_scores):
 #group_gradients_for_scoring = hfl.aggregate_groups(gradients, device, seed, heirichal_params, skip_filtering=True)
 
 
-def aggregate_groups(all_user_gradients, computation_device, random_seed, hierarchical_parameters, skip_filtering=False):
+def aggregate_groups(user_gradient_vectors, computation_device, random_seed, hierarchical_parameters, skip_filtering=False):
     """
     Aggregates gradients within each group, optionally excluding assumed malicious users
     globally and removing groups with only one user after filtering.
     
     Args:
-        all_user_gradients: List of gradients from all clients
+        user_gradient_vectors: List of gradients from all clients
         computation_device: Device used for computation
         random_seed: Random seed for reproducibility
         hierarchical_parameters: Dictionary containing hierarchical parameters
@@ -334,17 +355,13 @@ def aggregate_groups(all_user_gradients, computation_device, random_seed, hierar
     Returns:
         Dictionary mapping group indices to their aggregated gradients
     """
-    np.random.seed(random_seed)
     
     # Extract parameters
     user_group_assignments = hierarchical_parameters["user membership"]
     total_group_count = hierarchical_parameters["num groups"]
     user_trust_scores = hierarchical_parameters["user score"]
     malicious_percentage = hierarchical_parameters["assumed_mal_prct"]
-    total_user_count = len(all_user_gradients)
-    
-    # Convert gradients to parameter lists
-    user_gradient_vectors = [torch.cat([param.reshape((-1, 1)) for param in gradient], dim=0) for gradient in all_user_gradients]
+    total_user_count = len(user_gradient_vectors)
     gradient_shape = user_gradient_vectors[0].size()
     
     # Organize users by group
@@ -355,17 +372,25 @@ def aggregate_groups(all_user_gradients, computation_device, random_seed, hierar
         filtered_groups_with_ids = []
         for group_id, group_users in enumerate(groups_with_users):
             user_ids = [user_id for user_id, _ in group_users]
-            if len(user_ids) > 1:
-                filtered_groups_with_ids.append((group_id, user_ids))
+            filtered_groups_with_ids.append((group_id, user_ids))
+
+        
     else:
         # Apply normal filtering
         filtered_groups_with_ids = filter_malicious_users(groups_with_users, user_trust_scores, malicious_percentage, total_user_count)
     
+
+    #
+    assert len(filtered_groups_with_ids) != 0, "assertion for debugging"
+
     # Check if we have any valid groups after filtering
     if len(filtered_groups_with_ids) == 0:
         print("Warning: All groups were filtered out. Using fallback strategy.")
         filtered_groups_with_ids = handle_filtering_fallback(groups_with_users, user_trust_scores)
     
+
+    
+
     # Compute gradients for each group
     group_to_gradient_mapping = compute_group_gradients(filtered_groups_with_ids, user_gradient_vectors, gradient_shape, computation_device)
     
@@ -467,7 +492,7 @@ def update_user_scores(heirichal_params, groups_scores):
 
 
     
-def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params):
+def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params, number_of_users):
     """
     Implements a robust aggregation mechanism for group gradients.
     
@@ -483,11 +508,30 @@ def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params
     Returns:
         global_update: The robustly aggregated update vector
     """
-    import torch
+
     
+
+
+
     # Verify we have gradients to work with
-    if not group_gradients:
+    if not group_gradients:  # Check if dictionary is empty
         raise ValueError("No group gradients available for aggregation")
+    elif len(group_gradients) == 1:
+        
+        # Only one group, apply its gradient directly
+        first_grad = next(iter(group_gradients.values()))
+        global_update = first_grad
+
+        #average the gradient over the number of users
+        global_update /= number_of_users
+
+        # Update the global model
+        idx = 0
+        for j, param in enumerate(net.parameters()):
+            param.add_(global_update[idx:(idx + torch.numel(param))].reshape(tuple(param.size())), alpha=-lr)
+            idx += torch.numel(param)
+
+        return global_update
     
     # Simple averaging of all gradients if requested
     if simple_average:
@@ -495,10 +539,17 @@ def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params
         global_update = torch.zeros_like(first_grad).to(device)
         for grad in group_gradients.values():
             global_update += grad
-        global_update /= len(group_gradients)
+        
+        if averageOverGroupLen:
+            print("Averaging over group length")
+            global_update /= len(group_gradients)
+        else:
+            global_update /= number_of_users
+        # print the gradient norms 
         
     # Skip robust aggregation if requested
     elif bypass_robust:
+        print("Bypassing robust aggregation mechanism: Using normalized group gradients")
         # Calculate L2 norm for each group gradient
         group_norms = {group_id: torch.norm(grad, p=2) for group_id, grad in group_gradients.items()}
         
@@ -512,10 +563,11 @@ def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params
         global_update = torch.zeros_like(first_grad).to(device)
         for grad in normalized_gradients.values():
             global_update += grad
-        global_update /= len(normalized_gradients)
+        #global_update /= len(normalized_gradients)
         
     # Use robust aggregation
     else:
+        print("Using robust aggregation")
         # Calculate L2 norm for each group gradient
         group_norms = {group_id: torch.norm(grad, p=2) for group_id, grad in group_gradients.items()}
         
@@ -532,6 +584,7 @@ def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params
         
         # If all gradients were filtered out, use median
         if len(filtered_gradients) == 0:
+            print("All gradients filtered out, using median")
             # Find median gradient by sorting norm values
             sorted_group_ids = [group_id for group_id, _ in 
                               sorted(group_norms.items(), key=lambda item: item[1])]
@@ -539,6 +592,7 @@ def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params
             median_group_id = sorted_group_ids[median_idx]
             global_update = group_gradients[median_group_id]
         else:
+            print("Filtered gradients:", len(filtered_gradients))
             # Average the filtered and scaled gradients
             first_grad = next(iter(filtered_gradients.values()))
             global_update = torch.zeros_like(first_grad).to(device)

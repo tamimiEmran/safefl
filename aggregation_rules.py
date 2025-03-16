@@ -956,9 +956,9 @@ def heirichalFL(gradients, net, lr, f, byz, device,  heirichal_params, seed):
     # make sure the heirichal_params has the following keys (user_membership, user_score, round, num_groups, history)
     # and make sure that history is a list of dictionaries containing the keys (round_num, user_membership, user_score, group_gradients, group_scores, global_gradient)
     """
-                    heirichal_params = {"assumed_mal_prct":assumed_mal_prct , "user membership": [], "user score": [], "round": 0, "num groups": n_groups, \
-                                    "history": [{'round_num': int, 'user_membership': list, 'user_score_adjustment': list, \
-                                                 'group_scores': list,"user_scores": list}]}
+    heirichal_params = {"assumed_mal_prct":assumed_mal_prct , "user membership": [], "user score": [], "round": 0, "num groups": n_groups, \
+                    "history": [{'round_num': int, 'user_membership': list, 'user_score_adjustment': list, \
+                                    'group_scores': list,"user_scores": list}]}
     """
 
 
@@ -991,32 +991,39 @@ def heirichalFL(gradients, net, lr, f, byz, device,  heirichal_params, seed):
     else:
         param_list = byz(param_list, net, lr, f, device)
 
-    number_of_users = len(gradients)
+    number_of_users = len(param_list)
 
-    # simulate groups 
+
+
+
+
     heirichal_params = hfl.simulate_groups(heirichal_params,number_of_users, seed)
-    
-    group_gradients_for_scoring = hfl.aggregate_groups(gradients, device, seed, heirichal_params, skip_filtering=True)
 
+        # for debugging aggregate the params_lsit 
+
+    group_gradients_for_scoring = hfl.aggregate_groups(param_list, device, seed, heirichal_params, skip_filtering=True)
+
+        # compute global model update
+    global_update = torch.zeros(param_list[0].size()).to(device)
+    for i, grad in enumerate(param_list):
+        global_update += grad 
+    global_update /= number_of_users
+
+    # update the global model
+    idx = 0
+    for j, param in enumerate(net.parameters()):
+        param.add_(global_update[idx:(idx + torch.numel(param))].reshape(tuple(param.size())), alpha=-lr)
+        idx += torch.numel(param)
+
+    return heirichal_params
 
     groups_scores = hfl.score_groups(group_gradients_for_scoring, heirichal_params) 
-    # save scores for future rounds
-
-    current_round_record["group_scores"] = copy.deepcopy(groups_scores)
-
-
-
 
     heirichal_params, user_scores_adjustments, current_user_scores = hfl.update_user_scores(heirichal_params, groups_scores)
-    # use previous scores aswell with baysian update
-    current_round_record["user_score_adjustment"] = copy.deepcopy(user_scores_adjustments)
-    current_round_record["user_scores"] = copy.deepcopy(current_user_scores)
 
-    group_gradients = hfl.aggregate_groups(gradients, device, seed, heirichal_params)
+    group_gradients = hfl.aggregate_groups(param_list, device, seed, heirichal_params)
 
-    current_round_record["user_membership"] = copy.deepcopy(heirichal_params['user membership'])
-
-    heirichal_params = hfl.shuffle_users(heirichal_params, number_of_users, seed)
+    #heirichal_params = hfl.shuffle_users(heirichal_params, number_of_users, seed)
 
     if len(group_gradients) == 0:
         skip_filtering = True
@@ -1025,13 +1032,13 @@ def heirichalFL(gradients, net, lr, f, byz, device,  heirichal_params, seed):
         # if there are no gradients in the group_gradients then use the group_gradients_for_scoring to compute the global gradient
         group_gradients = group_gradients_for_scoring
 
-    robust_update = hfl.robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params)
 
 
-    current_round_record["global_gradient"] = robust_update.clone().detach()
 
 
-    heirichal_params['history'].append(current_round_record)
+
+    robust_update = hfl.robust_groups_aggregation(group_gradients, net, lr, device,  heirichal_params, number_of_users)
+
 
     return heirichal_params
 

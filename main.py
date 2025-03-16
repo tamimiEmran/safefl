@@ -21,6 +21,9 @@ NOTE ON THE CODE:
 DOUBLE CHECK IF THAT THE USER SCORES ARE IDICATIVE OF TRUSTWORTHINESS AND NOT MALICIOUSNESS
 THE USER IDS SHOULD START FROM 0 AND BE CONTINUOUS
 
+1. I am editing fedavg to not take into account data_sizes = [x.size(dim=0) for x in each_worker_data]
+Revert later for honest comparison
+
 """
 
 
@@ -400,7 +403,7 @@ def plot_results(runs_test_accuracy, runs_backdoor_success, test_iterations, nit
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     
     # Show the plot and then clear it
-    #plt.show()
+    plt.show()
 
 def weight_init(m):
     """
@@ -540,6 +543,7 @@ def main(args):
                 n_groups = args.n_groups
                 assumed_mal_prct = args.assumed_mal_prct
                 n_users = args.nworkers
+                
 
                 heirichal_params = {"assumed_mal_prct":assumed_mal_prct , "user membership": [], "user score": [], "round": 0, "num groups": n_groups, \
                                     "history": [{'round_num': int, 'user_membership': list, 'user_score_adjustment': list, \
@@ -606,6 +610,8 @@ def main(args):
 
                 elif args.aggregation == "fedavg":
                     data_sizes = [x.size(dim=0) for x in each_worker_data]
+                    # make the data_sizes the same for all workers
+                    data_sizes = [max(data_sizes) for i in range(args.nworkers)]
                     aggregation_rules.fedavg(grad_list, net, args.lr, args.nbyz, byz, device, data_sizes)
 
                 elif args.aggregation == "krum":
@@ -645,6 +651,7 @@ def main(args):
                     sanitization_factor, previous_global_gradient = aggregation_rules.romoa(grad_list, net, args.lr, args.nbyz, byz, device, F=sanitization_factor, prev_global_update=previous_global_gradient, seed=args.seed)
 
                 elif args.aggregation == "heirichalFL":
+                    
                     heirichal_params = aggregation_rules.heirichalFL(grad_list, net, args.lr, args.nbyz, byz, device, heirichal_params, seed=args.seed)
 
                 else:
