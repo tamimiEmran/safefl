@@ -34,8 +34,7 @@ def simulate_groups(heirichal_params, number_of_users, seed):
     
     # Create array of user indices and shuffle it
     user_indices = np.arange(number_of_users)
-    rng = np.random.RandomState(seed)
-    rng.shuffle(user_indices)
+
         
     # Calculate base number of users per group and remainder
     base_per_group = number_of_users // num_groups
@@ -76,7 +75,6 @@ def shuffle_users(heirichal_params, number_of_users, seed):
         seed: Random seed for reproducibility
     """
     # Set random seed
-    np.random.seed(seed)
     
     # Get current user membership and number of groups
     user_membership = heirichal_params["user membership"]
@@ -135,7 +133,8 @@ def shuffle_users(heirichal_params, number_of_users, seed):
             new_user_membership[user_id] = new_positions[user_id]
         else:
             # Fallback for any user not in the mapping (should not happen)
-            new_user_membership[user_id] = np.random.randint(0, num_groups)
+                #new_user_membership[user_id] = np.random.randint(0, num_groups)
+            raise ValueError("User not found in diagonal mapping")
     
     # Update the user membership
     heirichal_params["user membership"] = new_user_membership
@@ -241,7 +240,6 @@ def compute_group_gradients(filtered_groups_with_ids, user_gradients, gradient_s
 
     
     assert len(group_to_gradient_mapping) == len(filtered_groups_with_ids), "All groups must have gradients"
-    assert len(group_to_gradient_mapping.keys()) == 1, "Only one group should be present in debugging"
     
     return group_to_gradient_mapping
 
@@ -607,3 +605,65 @@ def robust_groups_aggregation(group_gradients, net, lr, device, heirichal_params
         idx += torch.numel(param)
     
     return global_update
+
+
+
+def print_group_memberships(heirichal_params, max_users_to_show=50):
+    """
+    Prints a visual representation of group memberships.
+    
+    Args:
+        heirichal_params: Dictionary containing hierarchical parameters
+        max_users_to_show: Maximum number of users to show in visualization
+    """
+    user_memberships = heirichal_params["user membership"]
+    num_groups = heirichal_params["num groups"]
+    round_num = heirichal_params["round"]
+    total_users = len(user_memberships)
+    
+    # Handle case where there are too many users to display
+    if total_users > max_users_to_show:
+        print(f"Round {round_num}: Showing first {max_users_to_show} of {total_users} users")
+        visual_length = max_users_to_show
+    else:
+        visual_length = total_users
+    
+    # Create group symbols for visualization
+    symbols = ["●", "■", "▲", "★", "♦", "♠", "♣", "♥", "◆", "◈"]
+    # Extend symbols if more than 10 groups
+    if num_groups > len(symbols):
+        symbols = symbols * (num_groups // len(symbols) + 1)
+    
+    # Create header
+    print(f"\n===== Group Memberships (Round {round_num}) =====")
+    
+    # Print legend
+    print("Legend:", end=" ")
+    for i in range(num_groups):
+        print(f"Group {i}: {symbols[i]}", end="  ")
+    print("\n")
+    
+    # Print visualization
+    for i in range(0, visual_length, 10):
+        end_idx = min(i + 10, visual_length)
+        # Print user indices
+        print(f"Users {i:2d}-{end_idx-1:2d}: ", end="")
+        
+        # Print group symbols
+        for j in range(i, end_idx):
+            group_id = user_memberships[j]
+            print(f"{symbols[group_id]}", end=" ")
+        
+        print()
+    
+    # Print group statistics
+    print("\nGroup sizes:")
+    counts = {}
+    for group_id in user_memberships:
+        counts[group_id] = counts.get(group_id, 0) + 1
+    
+    for group_id in range(num_groups):
+        count = counts.get(group_id, 0)
+        print(f"Group {group_id}: {count} users", end="  ")
+    
+    print("\n" + "="*40)

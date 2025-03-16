@@ -34,7 +34,7 @@ protocols = {
         ],
         "heirichalFL": [
             "--aggregation", "heirichalFL",
-            "--n_groups", "1",
+            "--n_groups", "10",
             "--assumed_mal_prct", "0.0"
         ],
         "fltrust": [
@@ -77,7 +77,7 @@ def run_protocol(name, params):
 
 
 # make heirichalFL the first protocol to run
-protocols = {k: protocols[k] for k in ["fedavg", "heirichalFL", "flame", "divide_and_conquer", "fltrust"][1:]}
+protocols = {k: protocols[k] for k in ["heirichalFL", "fedavg", "flame", "divide_and_conquer", "fltrust"]}
 # Run each protocol
 for protocol_name, protocol_params in protocols.items():
     run_protocol(protocol_name, protocol_params)
