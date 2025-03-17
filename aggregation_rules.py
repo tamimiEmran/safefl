@@ -964,6 +964,10 @@ def heirichalFL(gradients, net, lr, f, byz, device, heirichal_params, seed):
                 print(f"history should have the key {key}")
                 raise ValueError(f"history should have the key {key}")
 
+    if "GT malicious" not in heirichal_params:
+        heirichal_params["GT malicious"] = [True] * f + [False] * (len(gradients) - f)
+        assert len(heirichal_params["GT malicious"]) == len(gradients), "GT malicious should have the same length as gradients"
+
     # Update round number
     heirichal_params['round'] += 1
     
@@ -995,7 +999,6 @@ def heirichalFL(gradients, net, lr, f, byz, device, heirichal_params, seed):
     # Simulate groups and assign users
     heirichal_params = hfl.simulate_groups(heirichal_params, number_of_users, seed)
 
-    
     # Record user membership for current round
     current_round_record["user_membership"] = heirichal_params["user membership"].copy()
     
@@ -1032,5 +1035,241 @@ def heirichalFL(gradients, net, lr, f, byz, device, heirichal_params, seed):
     
     # Add current round record to history
     heirichal_params["history"].append(current_round_record)
+
+    #
+    save_data_to_csv(heirichal_params, f)
     
     return heirichal_params
+
+
+
+
+
+def save_data_to_csv(heirichal_params, num_malicious=0):
+    """
+    Save hierarchical data to CSV files for analysis and visualization
+    
+    Args:
+        heirichal_params: Dictionary containing hierarchical parameters
+        num_malicious: Number of malicious users (default 0). The first num_malicious users are considered malicious.
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import torch
+    
+    # Create results directory
+    os.makedirs("resultsHFL/hierarchical", exist_ok=True)
+    
+    # Extract data from current round's record
+    latest_record = heirichal_params["history"][-1]
+    round_num = latest_record["round_num"]
+
+    isMal = heirichal_params["GT malicious"]
+    
+    # Create or update user membership CSV
+    user_membership_data = []
+    for user_id, group_id in enumerate(latest_record["user_membership"]):
+        user_membership_data.append({
+            "round": round_num,
+            "user_id": user_id,
+            "group_id": group_id,
+            "is_malicious": isMal[user_id]
+        })
+    
+    user_membership_df = pd.DataFrame(user_membership_data)
+    membership_file = f"resultsHFL/hierarchical/user_membership.csv"
+    
+    if os.path.exists(membership_file):
+        # Append to existing file
+        existing_df = pd.read_csv(membership_file)
+        updated_df = pd.concat([existing_df, user_membership_df], ignore_index=True)
+        updated_df.to_csv(membership_file, index=False)
+    else:
+        # Create new file
+        user_membership_df.to_csv(membership_file, index=False)
+    
+    # Create or update user scores CSV with malicious flag
+    user_scores_data = []
+    for user_id, score in enumerate(latest_record["user_scores"]):
+        adjustment = latest_record["user_score_adjustment"][user_id] if user_id < len(latest_record["user_score_adjustment"]) else 0
+        user_scores_data.append({
+            "round": round_num,
+            "user_id": user_id,
+            "score": score,
+            "adjustment": adjustment,
+            "is_malicious": 1 if user_id < num_malicious else 0
+        })
+    
+    user_scores_df = pd.DataFrame(user_scores_data)
+    scores_file = f"resultsHFL/hierarchical/user_scores.csv"
+    
+    if os.path.exists(scores_file):
+        # Append to existing file
+        existing_df = pd.read_csv(scores_file)
+        updated_df = pd.concat([existing_df, user_scores_df], ignore_index=True)
+        updated_df.to_csv(scores_file, index=False)
+    else:
+        # Create new file
+        user_scores_df.to_csv(scores_file, index=False)
+    
+    # Create or update group scores CSV with malicious user count
+    group_scores_data = []
+    
+    # Count malicious users per group
+    malicious_count_per_group = {}
+    for user_id, group_id in enumerate(latest_record["user_membership"]):
+        if user_id < num_malicious:  # User is malicious
+            malicious_count_per_group[group_id] = malicious_count_per_group.get(group_id, 0) + 1
+    
+    # Count total users per group
+    total_users_per_group = {}
+    for group_id in latest_record["user_membership"]:
+        total_users_per_group[group_id] = total_users_per_group.get(group_id, 0) + 1
+    
+    for group_id, score in latest_record["group_scores"].items():
+        mal_count = malicious_count_per_group.get(group_id, 0)
+        total_count = total_users_per_group.get(group_id, 0)
+        
+        group_scores_data.append({
+            "round": round_num,
+            "group_id": group_id,
+            "score": score,
+            "malicious_count": mal_count,
+            "total_users": total_count,
+            "malicious_ratio": mal_count / total_count if total_count > 0 else 0
+        })
+    
+    group_scores_df = pd.DataFrame(group_scores_data)
+    group_scores_file = f"resultsHFL/hierarchical/group_scores.csv"
+    
+    if os.path.exists(group_scores_file):
+        # Append to existing file
+        existing_df = pd.read_csv(group_scores_file)
+        updated_df = pd.concat([existing_df, group_scores_df], ignore_index=True)
+        updated_df.to_csv(group_scores_file, index=False)
+    else:
+        # Create new file
+        group_scores_df.to_csv(group_scores_file, index=False)
+    
+    # Save global gradient norms
+    if "global_gradient" in latest_record and latest_record["global_gradient"] is not None:
+        global_gradient = latest_record["global_gradient"]
+        
+        # Calculate and save gradient norm
+        gradient_norm = torch.norm(global_gradient, p=2).item()
+        
+        gradient_data = {
+            "round": round_num,
+            "gradient_norm": gradient_norm
+        }
+        
+        # Add first few components of the gradient vector (for visualization)
+        max_components = min(10, global_gradient.numel())
+        for i in range(max_components):
+            gradient_data[f"component_{i}"] = global_gradient.flatten()[i].item()
+            
+        gradient_df = pd.DataFrame([gradient_data])
+        gradient_file = f"resultsHFL/hierarchical/global_gradients.csv"
+        
+        if os.path.exists(gradient_file):
+            # Append to existing file
+            existing_df = pd.read_csv(gradient_file)
+            updated_df = pd.concat([existing_df, gradient_df], ignore_index=True)
+            updated_df.to_csv(gradient_file, index=False)
+        else:
+            # Create new file
+            gradient_df.to_csv(gradient_file, index=False)
+    
+    # Create or update summary statistics CSV with advanced metrics
+    summary_data = {
+        "round": round_num,
+        "num_groups": heirichal_params["num groups"],
+        "assumed_mal_prct": heirichal_params["assumed_mal_prct"]
+    }
+    
+    # Add group statistics
+    group_scores = latest_record["group_scores"]
+    if group_scores:
+        summary_data["max_group_score"] = max(group_scores.values())
+        summary_data["min_group_score"] = min(group_scores.values())
+        summary_data["avg_group_score"] = sum(group_scores.values()) / len(group_scores)
+        summary_data["std_group_score"] = np.std(list(group_scores.values()))
+        
+    # Add user score statistics
+    user_scores = latest_record["user_scores"]
+    if user_scores:
+        summary_data["max_user_score"] = max(user_scores)
+        summary_data["min_user_score"] = min(user_scores)
+        summary_data["avg_user_score"] = sum(user_scores) / len(user_scores)
+        summary_data["std_user_score"] = np.std(user_scores)
+        
+        # Calculate metrics for malicious vs. non-malicious users
+        if num_malicious > 0:
+            malicious_scores = [user_scores[i] for i in range(min(num_malicious, len(user_scores)))]
+            benign_scores = [user_scores[i] for i in range(num_malicious, len(user_scores))]
+            
+            if malicious_scores:
+                summary_data["avg_malicious_score"] = sum(malicious_scores) / len(malicious_scores)
+                summary_data["std_malicious_score"] = np.std(malicious_scores)
+                
+            if benign_scores:
+                summary_data["avg_benign_score"] = sum(benign_scores) / len(benign_scores)
+                summary_data["std_benign_score"] = np.std(benign_scores)
+                
+            # Calculate score gap between benign and malicious users
+            if malicious_scores and benign_scores:
+                summary_data["benign_malicious_score_gap"] = summary_data["avg_benign_score"] - summary_data["avg_malicious_score"]
+    
+    # Add group membership statistics
+    user_memberships = latest_record["user_membership"]
+    if user_memberships:
+        # Calculate isolation metrics - how segregated malicious users are
+        if num_malicious > 0:
+            # Count groups containing malicious users
+            groups_with_malicious = set()
+            for i in range(min(num_malicious, len(user_memberships))):
+                groups_with_malicious.add(user_memberships[i])
+                
+            # Calculate concentration metrics
+            summary_data["groups_with_malicious_users"] = len(groups_with_malicious)
+            summary_data["malicious_group_concentration"] = len(groups_with_malicious) / heirichal_params["num groups"]
+            
+            # Calculate isolation ratio - higher means more isolation of malicious users
+            mal_user_counts_per_group = {}
+            benign_user_counts_per_group = {}
+            
+            for user_id, group_id in enumerate(user_memberships):
+                if user_id < num_malicious:
+                    mal_user_counts_per_group[group_id] = mal_user_counts_per_group.get(group_id, 0) + 1
+                else:
+                    benign_user_counts_per_group[group_id] = benign_user_counts_per_group.get(group_id, 0) + 1
+            
+            # Calculate isolation metrics for each group containing malicious users
+            isolation_scores = []
+            for group_id in groups_with_malicious:
+                mal_count = mal_user_counts_per_group.get(group_id, 0)
+                benign_count = benign_user_counts_per_group.get(group_id, 0)
+                total_count = mal_count + benign_count
+                
+                # A perfect isolation would have all malicious users in specific groups
+                isolation_scores.append(mal_count / total_count if total_count > 0 else 0)
+            
+            if isolation_scores:
+                summary_data["avg_malicious_isolation"] = sum(isolation_scores) / len(isolation_scores)
+                summary_data["max_malicious_isolation"] = max(isolation_scores)
+    
+    summary_df = pd.DataFrame([summary_data])
+    summary_file = f"resultsHFL/hierarchical/summary_stats.csv"
+    
+    if os.path.exists(summary_file):
+        # Append to existing file
+        existing_df = pd.read_csv(summary_file)
+        updated_df = pd.concat([existing_df, summary_df], ignore_index=True)
+        updated_df.to_csv(summary_file, index=False)
+    else:
+        # Create new file
+        summary_df.to_csv(summary_file, index=False)
+    
+    if round_num % 10 == 0:  # Only print status every 10 rounds to avoid flooding the console
+        print(f"Saved hierarchical data for round {round_num} to CSV files")

@@ -34,3 +34,6 @@ def MMD(x, y, device):
         XY += torch.exp(-0.5 * dxy / a)
 
     return torch.mean(XX + YY - 2. * XY)
+
+
+
